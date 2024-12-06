@@ -1,0 +1,117 @@
+---
+- hosts: all
+  become: true
+  become_user: root
+  vars:
+    allowed_ssh_networks:
+      - 192.168.56.118/24
+      - 10.0.2.15/24
+    unnecessary_services:
+      - postfix
+      - telnet
+    unnecessary_software:
+      - tcpdump
+      - nmap-ncat
+      - wpa_supplicant
+
+  tasks:
+    - name: Perform Full Patching
+      package:
+        name: '*'
+        state: latest
+
+    - name: Add Admin Group
+      group:
+        name: admin
+        state: present
+
+    - name: Add Local User
+      user:
+        name: admin
+        group: admin
+        shell: /bin/bash
+        home: /home/admin
+        create_home: yes
+        state: present
+
+    - name: Add SSH Public Key For User
+      authorized_key:
+        user: admin
+        key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+        state: present
+
+    - name: Add Sudoers Rule for Local User
+      copy:
+        dest: /etc/sudoers.d/admin
+        src: etc/sudoers.d/admin
+        owner: root
+        group: root
+        mode: 0440
+        validate: /usr/sbin/visudo -csf %s
+
+    - name: Add Hardened SSH config
+      copy:
+        dest: /etc/ssh/sshd_config
+        src: etc/ssh/sshd_config
+        owner: root
+        group: root
+        mode: 0600
+      notify: Reload SSH
+
+    - name: Add SSH Port To Internal Zone
+      firewalld:
+        zone: internal
+        service: ssh
+        state: enabled
+        immediate: yes
+        permanent: yes
+
+    - name: Add Permitted Networks To Internal Zone
+      shell: firewall-cmd --zone=internal --add-source={{ item }} --permanent
+      with_items: "{{ allowed_ssh_networks }}"
+
+    - name: Drop SSH From The Public Zone
+      firewalld:
+        zone: public
+        service: ssh
+        state: disabled
+        immediate: yes
+        permanent: yes
+
+    - name: Remove Undesirable Packages
+      package:
+        name: "{{ unnecessary_software }}"
+        state: absent
+
+    - name: Stop And Disable Unnecessary Services
+      service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      loop: "{{ unnecessary_services }}"
+      ignore_errors: yes
+
+    - name: Set A Message Of The Day
+      copy:
+        dest: /etc/motd
+        src: etc/motd
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Set A Login Banner
+      copy:
+        dest: "{{ item }}"
+        src: etc/issue
+        owner: root
+        group: root
+        mode: 0644
+      with_items:
+        - /etc/issue
+        - /etc/issue.net
+
+  handlers:
+    - name: Reload SSH
+      service:
+        name: sshd
+        state: reloaded
